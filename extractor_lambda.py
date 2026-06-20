@@ -5,6 +5,14 @@ import urllib.parse
 
 import boto3
 
+# Carga el archivo .env si existe (VM / Docker / local).
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 QUEUE_URL = os.environ["QUEUE_URL"]
 TABLE_NAME = os.environ["TABLE_NAME"]
 
@@ -86,12 +94,13 @@ def _buscar_contexto(cuerpo, entrada):
 
 
 def _registrar_total(manuscript_id, tema, total):
-    """Actualiza el item METADATA con el total de referencias a procesar."""
+    """Actualiza el item METADATA con el total de referencias a procesar.
+    Reinicia los contadores a 0: registrar = empezar un proceso nuevo."""
     tabla.update_item(
         Key={"PK": f"MANUSCRIPT#{manuscript_id}", "SK": "METADATA"},
         UpdateExpression=(
-            "SET tema = :t, totalRefs = :n, "
-            "refsProcesadas = if_not_exists(refsProcesadas, :z), #estado = :e"
+            "SET tema = :t, totalRefs = :n, refsProcesadas = :z, "
+            "refsRetractadas = :z, #estado = :e"
         ),
         ExpressionAttributeNames={"#estado": "estado"},
         ExpressionAttributeValues={":t": tema, ":n": total, ":z": 0, ":e": "PROCESANDO"},
