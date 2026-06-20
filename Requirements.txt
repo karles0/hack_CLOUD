@@ -1,3 +1,10 @@
-# Dependencias del Worker LLM
-groq
-python-dotenv
+# SDK de AWS. Ya viene preinstalado en el runtime de Lambda, pero lo
+# incluimos para que el repo sea autosuficiente al desarrollar/probar
+# en local. Tambien trae 'botocore' (de donde sale ClientError).
+boto3>=1.34
+ 
+# Carga el archivo .env en local (load_dotenv). En Lambda no hace falta,
+# porque las variables las inyecta Serverless; por eso el codigo lo
+# importa dentro de un try/except y no falla si no esta.
+python-dotenv>=1.0
+ 
