@@ -1,40 +1,44 @@
+# =====================================================================
+# serverless.yml - Centinela de Integridad Cientifica
+# 100% reproducible: crea la tabla DynamoDB y las dos colas SQS (principal + DLQ),
+# y despliega los Lambdas Extractor y Worker ya enlazados a esos recursos.
+# =====================================================================
+
 service: centinela-integridad
+# Si usas el dashboard de Serverless, agrega tu org:
 org: tu-org
-useDotenv: true   
+
+useDotenv: true   # carga el .env (para las variables de Groq)
+
+custom:
+  tableName: centinela-integridad
+  queueName: cola-de-lotes
+  dlqName: cola-de-lotes-dlq
+  pythonRequirements: {}
 
 provider:
   name: aws
   runtime: python3.12
+  architecture: x86_64
   region: us-east-1            
   memorySize: 1024
-  timeout: 60                 
+  timeout: 60                  
   iam:
-    role: arn:aws:iam::TU_ACCOUNT_ID:role/LabRole
+    role: arn:aws:iam::${aws:accountId}:role/LabRole
   environment:
-    TABLE_NAME: ${env:TABLE_NAME}  
-
-plugins:
-  - serverless-python-requirements   
-
-custom:
-  pythonRequirements:
-    slim: true   
+    TABLE_NAME: ${self:custom.tableName}   # compartida por ambos Lambdas
 
 functions:
+
+  # ---------- Lambda (Extractor) ----------
+  # El trigger de S3 se conecta A MANO en la consola (Lambda > extractor > Add trigger).
   extractor:
     handler: extractor_lambda.handler
     environment:
-      QUEUE_URL: ${env:QUEUE_URL}      
-    events:
-      - s3:
-          bucket: processed-manuscripts-nina-2026   # <-- tu bucket existente
-          event: s3:ObjectCreated:*
-          rules:
-            - suffix: .md
-          existing: true   # NO crear el bucket: ya existe
+      QUEUE_URL:
+        Ref: ColaDeLotes        # URL de la cola principal creada mas abajo
 
   # ---------- Lambda (Worker LLM) ----------
-  # Se dispara con los mensajes de la cola, en lotes de 25.
   worker:
     handler: worker_llm_lambda.handler
     environment:
@@ -43,32 +47,53 @@ functions:
       CONTACT_EMAIL: ${env:CONTACT_EMAIL}
     events:
       - sqs:
-          arn: arn:aws:sqs:us-east-1:TU_ACCOUNT_ID:cola-de-lotes   # <-- ARN de tu cola
+          arn:
+            Fn::GetAtt: [ColaDeLotes, Arn]   # ARN de la cola creada abajo
           batchSize: 25
           maximumBatchingWindow: 5
           functionResponseType: ReportBatchItemFailures   # reintento por referencia
-          maximumConcurrency: 3   # limita Workers en paralelo para no saturar Groq (min 2)
+          maximumConcurrency: 3   # limita Workers en paralelo (min 2) para no saturar Groq
 
 # =====================================================================
-# si el Serverless cree la tabla y las
-# colas (despliegue 100% reproducible). Para usarlo: borra los recursos
-# que hiciste a mano y descomenta este bloque. Tendrias que ademas
-# referenciar la cola creada con su ARN via !GetAtt.
+# RECURSOS QUE SERVERLESS CREA (esto es lo que lo hace reproducible)
 # =====================================================================
-# resources:
-#   Resources:
-#     TablaCentinela:
-#       Type: AWS::DynamoDB::Table
-#       Properties:
-#         TableName: centinela-integridad
-#         AttributeDefinitions:
-#           - AttributeName: PK
-#             AttributeType: S
-#           - AttributeName: SK
-#             AttributeType: S
-#         KeySchema:
-#           - AttributeName: PK
-#             KeyType: HASH
-#           - AttributeName: SK
-#             KeyType: RANGE
-#         BillingMode: PAY_PER_REQUEST
+resources:
+  Resources:
+
+    # ---------- Tabla DynamoDB (diseno de tabla unica) ----------
+    TablaCentinela:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tableName}
+        BillingMode: PAY_PER_REQUEST       # on-demand (absorbe rafagas, sin tunear)
+        AttributeDefinitions:
+          - AttributeName: PK
+            AttributeType: S
+          - AttributeName: SK
+            AttributeType: S
+        KeySchema:
+          - AttributeName: PK
+            KeyType: HASH                  # partition key
+          - AttributeName: SK
+            KeyType: RANGE                 # sort key
+
+    # ---------- DLQ (se define primero; la principal la referencia) ----------
+    ColaDeLotesDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.dlqName}
+        MessageRetentionPeriod: 1209600    # 14 dias, para revisar lo que fallo
+        SqsManagedSseEnabled: true         # cifrado en reposo (SSE-SQS)
+
+    # ---------- Cola principal ----------
+    ColaDeLotes:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.queueName}
+        VisibilityTimeout: 360             # >= 6x el timeout del Worker (60)
+        ReceiveMessageWaitTimeSeconds: 20  # long polling
+        SqsManagedSseEnabled: true
+        RedrivePolicy:
+          deadLetterTargetArn:
+            Fn::GetAtt: [ColaDeLotesDLQ, Arn]
+          maxReceiveCount: 3               # 3 intentos y a la DLQ
