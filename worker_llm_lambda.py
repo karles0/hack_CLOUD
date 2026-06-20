@@ -1,5 +1,4 @@
-ACT_EMAIL  -> tu correo (Crossref pide uno para el "polite pool")
-"""
+
 import os
 import json
 import urllib.parse
