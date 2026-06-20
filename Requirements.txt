@@ -1,0 +1,3 @@
+# Dependencias del Worker LLM
+groq
+python-dotenv
